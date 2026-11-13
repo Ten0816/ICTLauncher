@@ -39,8 +39,10 @@ namespace
 
 			// 単独Escは戻る操作に使用する。
 			// Launcherの終了はShift + Esc。
+			// ウィンドウを閉じる操作で自動終了させない。
+			// 終了してよいかは毎フレーム Launcher 側で判断する。
 			System::SetTerminationTriggers(
-				UserAction::CloseButtonClicked
+				UserAction::NoAction
 			);
 
 			Scene::Resize(UI::RenderSize);
@@ -124,9 +126,33 @@ namespace
 			// ====================================================
 
 			bool shiftEscExit = false;
+			bool closeButtonExit = false;
 
 			while (System::Update())
 			{
+				// =================================================
+				// ウィンドウの「閉じる」操作の処理
+				//
+				// UserAction::NoAction を指定してあるため、
+				// ゲーム実行中は Launcher のみが終了するのを防ぐ。
+				// =================================================
+				if ((System::GetUserActions()
+					& UserAction::CloseButtonClicked) != 0)
+				{
+					if (runner_.IsActive())
+					{
+						LauncherLog::Write(
+							"LAUNCHER_CLOSE_BLOCKED",
+							U"reason=game_running"
+						);
+					}
+					else
+					{
+						closeButtonExit = true;
+						break;
+					}
+				}
+
 				// =================================================
 				// Launcher終了ショートカット
 				// Shift + Esc
@@ -240,8 +266,35 @@ namespace
 
 					if (status == GameRunStatus::Running)
 					{
+#if SIV3D_PLATFORM(WINDOWS)
+						// ゲームが前面化された際、GameRunner はLauncherを最小化する。
+						// それを一度確認してから、Launcherが再び前面に来た場合のみ
+						// 最小化してゲーム画面に戻る。起動直後の検出を妨げない。
+						const HWND launcherHwnd = static_cast<HWND>(
+							Platform::Windows::Window::GetHWND()
+						);
+
+						if (launcherHwnd && ::IsWindow(launcherHwnd))
+						{
+							if (::IsIconic(launcherHwnd))
+							{
+								launcherMinimizedForGame_ = true;
+							}
+							else if (
+								launcherMinimizedForGame_
+								&& ::GetForegroundWindow() == launcherHwnd
+							)
+							{
+								Window::Minimize();
+							}
+						}
+#endif
 						continue;
 					}
+
+#if SIV3D_PLATFORM(WINDOWS)
+					launcherMinimizedForGame_ = false;
+#endif
 
 					if (
 						status == GameRunStatus::LaunchFailed
@@ -359,7 +412,9 @@ namespace
 				"LAUNCHER_EXIT",
 				shiftEscExit
 					? U"shift_escape"
-					: U"window_closed_or_update_ended"
+					: (closeButtonExit
+						? U"window_close"
+						: U"update_ended")
 			);
 		}
 
@@ -368,6 +423,10 @@ namespace
 		static constexpr double IdleTimeoutSeconds = 60.0;
 
 		// 管理者用ショートカットの押下状態
+#if SIV3D_PLATFORM(WINDOWS)
+		// ゲーム起動後にLauncherが一度最小化されたか。
+		bool launcherMinimizedForGame_ = false;
+#endif
 		bool recoveryHotkeyWasDown_ = false;
 
 		// ========================================================
@@ -729,7 +788,7 @@ namespace
 				FontAsset(U"Survey.Title");
 
 			font(
-				U"展示は終了しました"
+				U"展示は終了しました。"
 			).drawAt(
 				36,
 				center.movedBy(0, -35),
@@ -822,6 +881,9 @@ namespace
 
 			screen_ = Screen::GameSelect;
 
+#if SIV3D_PLATFORM(WINDOWS)
+			launcherMinimizedForGame_ = false;
+#endif
 			const bool started =
 				runner_.Start(game);
 
