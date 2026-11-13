@@ -1,5 +1,4 @@
-﻿
-#include "..\include\GameRunner.hpp"
+﻿#include "..\include\GameRunner.hpp"
 #include "..\include\LauncherLog.hpp"
 
 #include <exception>
@@ -15,6 +14,7 @@ namespace
 	// ========================================================
 
 	constexpr uint64 BrowserWindowTimeoutMs = 15000;
+	constexpr uint64 BrowserRecoveryTimeoutMs = 5000;
 	constexpr uint64 ExeWindowTimeoutMs = 10000;
 
 	// ========================================================
@@ -509,6 +509,9 @@ bool GameRunner::Start(const Game& game)
 	}
 
 	recoveryRequested_ = false;
+#if SIV3D_PLATFORM(WINDOWS)
+	browserRecoveryRequestedAt_ = 0;
+#endif
 	currentGameId_ = game.gameId;
 
 	const String context =
@@ -787,6 +790,7 @@ bool GameRunner::RequestForceRecovery()
 	}
 
 	recoveryRequested_ = true;
+	browserRecoveryRequestedAt_ = ::GetTickCount64();
 
 	LauncherLog::Write(
 		"GAME_RECOVERY_REQUESTED",
@@ -1037,6 +1041,7 @@ GameRunStatus GameRunner::Update()
 
 			active_ = false;
 			recoveryRequested_ = false;
+			browserRecoveryRequestedAt_ = 0;
 			browserDetectionStartedAt_ = 0;
 
 			RestoreLauncherToForeground(
@@ -1055,6 +1060,73 @@ GameRunStatus GameRunner::Update()
 	}
 
 	// ========================================================
+	// 管理者復旧のタイムアウト
+	// WM_CLOSEで閉じない場合、Launcherの操作を復旧する。
+	// 強制終了は「自分が起動したプロセス」と
+	// 「追跡中のウィンドウのプロセス」が一致する場合のみ。
+	// ========================================================
+
+	if (
+		recoveryRequested_
+		&& browserRecoveryRequestedAt_ != 0
+		&& Config::IsTrackedWindowOpen(browserProcess_)
+	)
+	{
+		const uint64 elapsed =
+			::GetTickCount64() - browserRecoveryRequestedAt_;
+
+		if (elapsed >= BrowserRecoveryTimeoutMs)
+		{
+			bool terminated = false;
+			const DWORD windowPid = browserProcess_.windowProcessId;
+
+			// 他の既存ブラウザのプロセスを殺さない。
+			// 実行時に保持したプロセスハンドルとPIDを照合する。
+			if (
+				browserProcess_.processHandle != nullptr
+				&& windowPid != 0
+				&& windowPid == browserProcess_.processId
+				&& ::GetProcessId(browserProcess_.processHandle) == windowPid
+			)
+			{
+				terminated = (
+					::TerminateProcess(browserProcess_.processHandle, 1)
+					!= FALSE
+				);
+			}
+
+			LauncherLog::Write(
+				"GAME_RECOVERY_TIMEOUT",
+				U"gameId=" + currentGameId_
+				+ U" type=browser"
+				+ U" elapsedMs=" + Format(elapsed)
+				+ U" terminated=" + Format(terminated)
+				+ U" windowPid=" + Format(windowPid)
+				+ U" launchPid=" + Format(browserProcess_.processId)
+			);
+
+			browserProcess_.Close();
+			active_ = false;
+			recoveryRequested_ = false;
+			browserRecoveryRequestedAt_ = 0;
+			browserDetectionStartedAt_ = 0;
+
+			RestoreLauncherToForeground(currentGameId_);
+
+			if (not terminated)
+			{
+				System::MessageBoxOK(
+					U"ブラウザが終了要求に応答しませんでした。\n"
+					U"安全のため強制終了せず、Launcherに戻りました。\n"
+					U"ブラウザのウィンドウが残っている場合は、管理者が確認してください。"
+				);
+			}
+
+			return GameRunStatus::ForceRecovered;
+		}
+	}
+
+	// ========================================================
 	// ブラウザゲームの終了監視
 	// ========================================================
 
@@ -1068,6 +1140,7 @@ GameRunStatus GameRunner::Update()
 
 		active_ = false;
 		browserDetectionStartedAt_ = 0;
+		browserRecoveryRequestedAt_ = 0;
 
 		RestoreLauncherToForeground(
 			currentGameId_
