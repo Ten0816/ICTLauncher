@@ -42,4 +42,19 @@ struct Game
 // ============================================================
 
 
-Array<Game> LoadGames();
+// ゲーム読み込み時の問題を表示するための診断情報
+struct GameLoadIssue
+{
+	FilePath path;
+	String reason;
+	bool warning = false;
+};
+
+struct GameLoadReport
+{
+	size_t scanned = 0;
+	size_t loaded = 0;
+	Array<GameLoadIssue> issues;
+};
+
+Array<Game> LoadGames(GameLoadReport* report = nullptr);

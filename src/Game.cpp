@@ -1,5 +1,4 @@
-﻿
-#include "..\include\Game.hpp"
+﻿#include "..\include\Game.hpp"
 #include "..\include\Config.hpp"
 #include "..\include\KeyGuide.hpp"
 #include "..\include\LauncherLog.hpp"
@@ -9,9 +8,31 @@
 #include <utility>
 #include <exception>
 #include <system_error>
+#include <cstring>
 
 namespace
 {
+	// LoadGames()の処理中だけ、既存のログ出力を診断結果に反映する。
+	thread_local GameLoadReport* activeLoadReport = nullptr;
+
+	class GameLoadReportScope
+	{
+	public:
+		explicit GameLoadReportScope(GameLoadReport* report)
+			: previous_(activeLoadReport)
+		{
+			activeLoadReport = report;
+		}
+
+		~GameLoadReportScope()
+		{
+			activeLoadReport = previous_;
+		}
+
+	private:
+		GameLoadReport* previous_;
+	};
+
 	// ========================================================
 	// ログ出力
 	// ========================================================
@@ -29,6 +50,15 @@ namespace
 
 		// 開発時の確認用
 		Print << message;
+
+		if (activeLoadReport != nullptr)
+		{
+			GameLoadIssue issue;
+			issue.path = jsonPath;
+			issue.reason = reason;
+			issue.warning = (std::strcmp(event, "GAME_CONFIG_WARNING") == 0);
+			activeLoadReport->issues.push_back(std::move(issue));
+		}
 	}
 
 	// ========================================================
@@ -532,8 +562,14 @@ namespace
 // ゲーム一覧の読み込み
 // ============================================================
 
-Array<Game> LoadGames()
+Array<Game> LoadGames(GameLoadReport* report)
 {
+	if (report)
+	{
+		*report = GameLoadReport{};
+	}
+
+	GameLoadReportScope reportScope{ report };
 	Array<Game> games;
 
 	// Windowsでは大文字・小文字の違いだけで
@@ -579,6 +615,11 @@ Array<Game> LoadGames()
 		{
 			// 設定JSONがないフォルダはゲームではない
 			continue;
+		}
+
+		if (report)
+		{
+			++report->scanned;
 		}
 
 		try
@@ -918,6 +959,11 @@ Array<Game> LoadGames()
 		"GAME_CONFIG_SUMMARY",
 		U"loaded=" + Format(games.size())
 	);
+
+	if (report)
+	{
+		report->loaded = games.size();
+	}
 
 	return games;
 }

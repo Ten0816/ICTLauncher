@@ -7,6 +7,7 @@
 #include "..\include\SurveyForm.hpp"
 #include "..\include\UI.hpp"
 #include "..\include\VisualGuide.hpp"
+#include <algorithm>
 
 namespace
 {
@@ -17,7 +18,8 @@ namespace
 		PostGameSurveyPrompt,
 		SurveyForm,
 		SurveyCompleted,
-		ExhibitionEnded
+		ExhibitionEnded,
+		Diagnostics
 	};
 
 	enum class ConfirmDialog
@@ -85,7 +87,7 @@ namespace
 			lastActivityAt_ = Scene::Time();
 			lastCursorPos_ = Cursor::Pos();
 
-			games_ = LoadGames();
+			games_ = LoadGames(&gameLoadReport_);
 
 			if (games_.isEmpty())
 			{
@@ -94,9 +96,19 @@ namespace
 					U"no_games_found"
 				);
 
-				System::MessageBoxOK(
-					U"ゲームがありません。"
-				);
+				String message =
+					U"読み込めるゲームがありません。\n確認した設定ファイル: "
+					+ Format(gameLoadReport_.scanned);
+
+				if (not gameLoadReport_.issues.isEmpty())
+				{
+					const auto& issue = gameLoadReport_.issues.front();
+					message += U"\n\n最初の診断結果: " + issue.reason
+						+ U"\n" + issue.path;
+				}
+
+				message += U"\n\n詳細: logs/launcher.log";
+				System::MessageBoxOK(message);
 
 				LauncherLog::Write(
 					"LAUNCHER_EXIT",
@@ -209,6 +221,7 @@ namespace
 				// =================================================
 
 				CheckRecoveryHotkey();
+				CheckDiagnosticsHotkey();
 
 				// =================================================
 				// ゲーム実行状態の監視
@@ -234,18 +247,23 @@ namespace
 						|| status == GameRunStatus::ForceRecovered
 					)
 					{
-						// 起動失敗・クラッシュ・管理者復旧ではアンケートを出さない。
+						// 起動失敗・管理者による復旧時は
+						// アンケートを表示しない。
 						screen_ = Screen::GameSelect;
 						dialog_ = ConfirmDialog::None;
-						lastActivityAt_ = Scene::Time();
+
 						continue;
 					}
 
 					if (status == GameRunStatus::Finished)
 					{
-						// 通常終了後はアンケートを案内する。
+						// 正常なゲーム終了後は、
+						// アンケートへの回答を案内する。
+						//
+						// 展示終了時刻を過ぎていても、
+						// 回答やスキップの機会を確保する。
 						screen_ = Screen::PostGameSurveyPrompt;
-						lastActivityAt_ = Scene::Time();
+
 						continue;
 					}
 				}
@@ -302,6 +320,10 @@ namespace
 
 				case Screen::SurveyForm:
 					HandleSurveyForm();
+					break;
+
+				case Screen::Diagnostics:
+					DrawDiagnostics();
 					break;
 
 				case Screen::ExhibitionEnded:
@@ -387,6 +409,136 @@ namespace
 		// ========================================================
 		// 管理者用復旧ショートカット
 		// ========================================================
+
+		// 管理者専用。アンケート途中やゲーム実行中には開けない。
+		// Ctrl + Shift + F10
+		void CheckDiagnosticsHotkey()
+		{
+#if SIV3D_PLATFORM(WINDOWS)
+			const bool ctrl = (::GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+			const bool shift = (::GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+			const bool f10 = (::GetAsyncKeyState(VK_F10) & 0x8000) != 0;
+			const bool pressed = ctrl && shift && f10;
+
+			if (pressed && not diagnosticsHotkeyWasDown_ && not runner_.IsActive())
+			{
+				if (screen_ == Screen::GameSelect && dialog_ == ConfirmDialog::None)
+				{
+					diagnosticsPage_ = 0;
+					screen_ = Screen::Diagnostics;
+				}
+				else if (screen_ == Screen::Diagnostics)
+				{
+					screen_ = Screen::GameSelect;
+				}
+				lastActivityAt_ = Scene::Time();
+			}
+			diagnosticsHotkeyWasDown_ = pressed;
+#endif
+		}
+
+		void DrawDiagnostics()
+		{
+			constexpr size_t ItemsPerPage = 7;
+			RectF{ 0, 0, UI::WindowSize.x, UI::WindowSize.y }
+			.draw(UI::BackgroundColor);
+
+			const Font& title = FontAsset(U"Survey.Title");
+			const Font& body = FontAsset(U"Survey.Body");
+			const Font& smallFont = FontAsset(U"Survey.Small");
+
+			title(U"ゲーム読み込み診断")
+				.draw(30, Vec2{ 40, 24 }, UI::TextColor);
+
+			body(U"読み込み成功: " + Format(gameLoadReport_.loaded)
+				+ U" / " + Format(gameLoadReport_.scanned))
+				.draw(20, Vec2{ 45, 90 }, UI::TextColor);
+
+			size_t errors = 0;
+			size_t warnings = 0;
+			for (const auto& issue : gameLoadReport_.issues)
+			{
+				if (issue.warning) ++warnings;
+				else ++errors;
+			}
+
+			body(U"エラー: " + Format(errors)
+				+ U"    警告: " + Format(warnings))
+				.draw(18, Vec2{ 45, 130 }, UI::TextColor);
+
+			const size_t count = gameLoadReport_.issues.size();
+			const size_t pages = std::max<size_t>(
+				1, (count + ItemsPerPage - 1) / ItemsPerPage);
+			diagnosticsPage_ = std::min(diagnosticsPage_, pages - 1);
+
+			if (count == 0)
+			{
+				body(U"読み込み時のエラー・警告はありません。")
+					.draw(20, Vec2{ 45, 210 }, UI::TextColor);
+			}
+
+			const size_t start = diagnosticsPage_ * ItemsPerPage;
+			const size_t end = std::min(start + ItemsPerPage, count);
+			for (size_t i = start; i < end; ++i)
+			{
+				const auto& issue = gameLoadReport_.issues[i];
+				const double y = 185 + (i - start) * 52.0;
+				RectF{ 40, y, 1200, 47 }.rounded(5).draw(ColorF{ 1.0 });
+
+				const ColorF color = issue.warning
+					? ColorF{ 0.60, 0.39, 0.08 }
+				: ColorF{ 0.80, 0.18, 0.18 };
+				const String category = issue.warning ? U"警告" : U"エラー";
+
+				// 一時的な文字列ビューや文字単位の暗黙変換を使わず、
+				// 表示用文字列を明示的に構築する。
+				String message = issue.reason;
+				if (message.size() > 115)
+				{
+					message = String{ message.substr(0, 112) };
+					message += U"...";
+				}
+
+				String summary = U"[";
+				summary += category;
+				summary += U"] ";
+				summary += message;
+				smallFont(summary).draw(15, Vec2{ 52, y + 3 }, color);
+
+				String pathText = issue.path;
+				if (pathText.size() > 115)
+				{
+					const String tail = pathText.substr(pathText.size() - 112);
+					pathText = U"...";
+					pathText += tail;
+				}
+				smallFont(pathText).draw(12, Vec2{ 52, y + 26 }, UI::TextColor);
+			}
+
+			const RectF prev{ 390, 570, 130, 45 };
+			const RectF next{ 540, 570, 130, 45 };
+			const RectF close{ 1030, 570, 210, 45 };
+
+			if (UI::DrawChoiceButton(prev, U"前へ", false)
+				&& diagnosticsPage_ > 0)
+			{
+				--diagnosticsPage_;
+			}
+			if (UI::DrawChoiceButton(next, U"次へ", false)
+				&& diagnosticsPage_ + 1 < pages)
+			{
+				++diagnosticsPage_;
+			}
+			body(Format(diagnosticsPage_ + 1) + U" / " + Format(pages))
+				.draw(17, Vec2{ 700, 580 }, UI::TextColor);
+
+			if (UI::DrawChoiceButton(close, U"閉じる", true)
+				|| KeyEscape.down())
+			{
+				screen_ = Screen::GameSelect;
+				lastActivityAt_ = Scene::Time();
+			}
+		}
 
 		void CheckRecoveryHotkey()
 		{
@@ -700,6 +852,10 @@ namespace
 		// ========================================================
 		// メンバー変数
 		// ========================================================
+
+		GameLoadReport gameLoadReport_;
+		bool diagnosticsHotkeyWasDown_ = false;
+		size_t diagnosticsPage_ = 0;
 
 		AppSettings settings_;
 
