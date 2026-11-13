@@ -15,8 +15,11 @@ enum class GameRunStatus
 	Idle,
 	Running,
 	Finished,
+	Crashed,
+	ForceRecovered,
 	LaunchFailed
 };
+
 
 class GameRunner
 {

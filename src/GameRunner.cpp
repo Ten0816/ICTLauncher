@@ -37,6 +37,35 @@ namespace
 		}
 	}
 
+
+	// ========================================================
+	// EXEの終了結果からクラッシュの可能性を判定
+	// Optionalの終了コードにも対応
+	// ========================================================
+
+	template <class T>
+	bool IsCrashExitCode(const T& result)
+	{
+		if constexpr (requires { result.has_value(); })
+		{
+			if (not result.has_value())
+			{
+				// 終了コードが取得できない場合は断定しない
+				return false;
+			}
+
+			return IsCrashExitCode(*result);
+		}
+		else
+		{
+			const uint32 rawCode =
+				static_cast<uint32>(result);
+
+			return IsLikelyCrashCode(rawCode);
+		}
+	}
+
+
 	// ========================================================
 	// EXE終了コードのログ記録
 	// ========================================================
@@ -859,6 +888,7 @@ GameRunStatus GameRunner::Update()
 			return GameRunStatus::Running;
 		}
 
+
 		// ====================================================
 		// EXE終了処理
 		// ====================================================
@@ -866,17 +896,21 @@ GameRunStatus GameRunner::Update()
 		const auto exitCode =
 			process_->getExitCode();
 
+		// 既存の終了コードログ
 		WriteExitCode(
 			currentGameId_,
 			exitCode
 		);
+
+		// クラッシュの可能性を判定
+		const bool crashed =
+			IsCrashExitCode(exitCode);
 
 #if SIV3D_PLATFORM(WINDOWS)
 
 		waitingForExeWindow_ = false;
 		existingExeWindows_.clear();
 		currentExePath_.clear();
-
 		exeWindowDetectionStartedAt_ = 0;
 
 #endif
@@ -884,9 +918,14 @@ GameRunStatus GameRunner::Update()
 		process_.reset();
 		active_ = false;
 
+		// Launcherを前面に戻す
 		RestoreLauncherToForeground(
 			currentGameId_
 		);
+
+		// ====================================================
+		// 管理者による強制復旧
+		// ====================================================
 
 		if (recoveryRequested_)
 		{
@@ -898,9 +937,28 @@ GameRunStatus GameRunner::Update()
 
 			recoveryRequested_ = false;
 
-			// 管理者復旧後はアンケートを表示しない
-			return GameRunStatus::LaunchFailed;
+			return GameRunStatus::ForceRecovered;
 		}
+
+		// ====================================================
+		// クラッシュが疑われる終了
+		// ====================================================
+
+		if (crashed)
+		{
+			LauncherLog::Write(
+				"GAME_CRASH_DETECTED",
+				U"gameId=" + currentGameId_
+				+ U" type=exe"
+				+ U" result=crash_suspected"
+			);
+
+			return GameRunStatus::Crashed;
+		}
+
+		// ====================================================
+		// 通常終了・未分類の終了
+		// ====================================================
 
 		return GameRunStatus::Finished;
 	}
@@ -1026,7 +1084,7 @@ GameRunStatus GameRunner::Update()
 			recoveryRequested_ = false;
 
 			// 復旧後のアンケートは表示しない
-			return GameRunStatus::LaunchFailed;
+			return GameRunStatus::ForceRecovered;
 		}
 
 		LauncherLog::Write(
