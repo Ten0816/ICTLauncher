@@ -6,6 +6,9 @@
 #include <vector>
 #include <algorithm>
 #include <cwchar>
+#include <filesystem>
+#include <memory>
+#include <stdexcept>
 
 namespace
 {
@@ -470,6 +473,149 @@ namespace
 #endif
 }
 
+
+class LauncherChildProcess
+{
+public:
+	explicit LauncherChildProcess(const FilePath& path)
+	{
+#if SIV3D_PLATFORM(WINDOWS)
+		const std::filesystem::path executable{
+			path.toWstr()
+		};
+
+		const std::filesystem::path directory =
+			executable.parent_path();
+
+		if (directory.empty())
+		{
+			return;
+		}
+
+		std::wstring command =
+			L"\"" + executable.wstring() + L"\"";
+
+		STARTUPINFOW startup{};
+		startup.cb = sizeof(startup);
+
+		PROCESS_INFORMATION info{};
+
+		const BOOL success = ::CreateProcessW(
+			executable.c_str(),
+			command.data(),
+			nullptr,
+			nullptr,
+			FALSE,
+			0,
+			nullptr,
+			directory.c_str(),
+			&startup,
+			&info
+		);
+
+		if (not success)
+		{
+			return;
+		}
+
+		::CloseHandle(info.hThread);
+		handle_ = info.hProcess;
+#else
+		child_ = ChildProcess{ path };
+#endif
+	}
+
+	~LauncherChildProcess()
+	{
+#if SIV3D_PLATFORM(WINDOWS)
+		if (handle_)
+		{
+			::CloseHandle(handle_);
+		}
+#endif
+	}
+
+	LauncherChildProcess(const LauncherChildProcess&) = delete;
+	LauncherChildProcess& operator=(const LauncherChildProcess&) = delete;
+
+	explicit operator bool() const
+	{
+#if SIV3D_PLATFORM(WINDOWS)
+		return handle_ != nullptr;
+#else
+		return child_.has_value()
+			&& static_cast<bool>(*child_);
+#endif
+	}
+
+	bool isRunning()
+	{
+#if SIV3D_PLATFORM(WINDOWS)
+		if (not handle_)
+		{
+			return false;
+		}
+
+		return ::WaitForSingleObject(handle_, 0)
+			== WAIT_TIMEOUT;
+#else
+		return child_
+			&& child_->isRunning();
+#endif
+	}
+
+	Optional<int32> getExitCode()
+	{
+#if SIV3D_PLATFORM(WINDOWS)
+		if (not handle_)
+		{
+			return none;
+		}
+
+		DWORD code = 0;
+
+		if (not ::GetExitCodeProcess(handle_, &code))
+		{
+			return none;
+		}
+
+		return static_cast<int32>(code);
+#else
+		if (not child_)
+		{
+			return none;
+		}
+
+		return child_->getExitCode();
+#endif
+	}
+
+	void terminate()
+	{
+#if SIV3D_PLATFORM(WINDOWS)
+		if (handle_ && not ::TerminateProcess(handle_, 1))
+		{
+			throw std::runtime_error(
+				"TerminateProcess failed"
+			);
+		}
+#else
+		if (child_)
+		{
+			child_->terminate();
+		}
+#endif
+	}
+
+private:
+#if SIV3D_PLATFORM(WINDOWS)
+	HANDLE handle_ = nullptr;
+#else
+	Optional<ChildProcess> child_;
+#endif
+};
+
+
 // ============================================================
 // コンストラクタ
 // ============================================================
@@ -617,9 +763,9 @@ bool GameRunner::Start(const Game& game)
 
 #endif
 
-		process_ = ChildProcess{
+		process_ = std::make_unique<LauncherChildProcess>(
 			game.path
-		};
+		);
 
 		if (not static_cast<bool>(*process_))
 		{

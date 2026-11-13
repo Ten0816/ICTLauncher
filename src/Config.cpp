@@ -16,9 +16,6 @@
 
 namespace Config
 {
-
-
-
 	// --------------------------------------------------------
 	// 環境変数の取得
 	// --------------------------------------------------------
@@ -406,6 +403,12 @@ namespace Config
 		result.launchTick = ::GetTickCount64();
 		result.executablePath = browser.path;
 
+		const std::filesystem::path browserDirectory =
+			std::filesystem::path{
+				browser.path.toWstr()
+		}.parent_path();
+
+
 		const BOOL success =
 			::CreateProcessW(
 				browser.path.toWstr().c_str(),
@@ -415,10 +418,13 @@ namespace Config
 				FALSE,
 				0,
 				nullptr,
-				nullptr,
+				browserDirectory.empty()
+					? nullptr
+					: browserDirectory.c_str(),
 				&startupInfo,
 				&processInfo
 			);
+
 
 		if (not success)
 		{

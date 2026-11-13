@@ -3,6 +3,7 @@
 #include "Game.hpp"
 #include <Siv3D.hpp>
 #include <vector>
+#include <memory>
 
 #if SIV3D_PLATFORM(WINDOWS)
 #include "Config.hpp"
@@ -18,6 +19,8 @@ enum class GameRunStatus
 	ForceRecovered,
 	LaunchFailed
 };
+
+class LauncherChildProcess;
 
 class GameRunner
 {
@@ -38,7 +41,7 @@ public:
 	}
 
 private:
-	Optional<ChildProcess> process_;
+	std::unique_ptr<LauncherChildProcess> process_;
 	bool active_ = false;
 	bool recoveryRequested_ = false;
 	String currentGameId_;
