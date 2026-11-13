@@ -8,6 +8,7 @@
 #include "..\include\UI.hpp"
 #include "..\include\VisualGuide.hpp"
 #include <algorithm>
+#include <utility>
 
 namespace
 {
@@ -222,6 +223,7 @@ namespace
 
 				CheckRecoveryHotkey();
 				CheckDiagnosticsHotkey();
+				CheckReloadHotkey();
 
 				// =================================================
 				// ゲーム実行状態の監視
@@ -437,6 +439,117 @@ namespace
 #endif
 		}
 
+		// 管理者専用: Ctrl + Shift + F9
+		// ゲーム選択画面でだけ再読み込み可能にする。
+		void CheckReloadHotkey()
+		{
+#if SIV3D_PLATFORM(WINDOWS)
+			const bool ctrl = (::GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+			const bool shift = (::GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+			const bool f9 = (::GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+			const bool pressed = ctrl && shift && f9;
+
+			if (pressed && not reloadHotkeyWasDown_
+				&& not runner_.IsActive()
+				&& screen_ == Screen::GameSelect
+				&& dialog_ == ConfirmDialog::None)
+			{
+				ReloadGames();
+			}
+
+			reloadHotkeyWasDown_ = pressed;
+#endif
+		}
+
+		void ReloadGames()
+		{
+			String selectedGameId;
+			if (not games_.isEmpty())
+			{
+				const size_t selected = selector_.SelectedIndex();
+				if (selected < games_.size())
+				{
+					selectedGameId = games_[selected].gameId;
+				}
+			}
+
+			LauncherLog::Write(
+				"GAME_RELOAD_START",
+				U"previousCount=" + Format(games_.size())
+			);
+
+			GameLoadReport newReport;
+			Array<Game> newGames = LoadGames(&newReport);
+
+			// 全件の読み込みに失敗した場合は、既存の一覧を破棄しない。
+			// ただし診断情報は最新の結果に更新する。
+			if (newGames.isEmpty())
+			{
+				gameLoadReport_ = std::move(newReport);
+				diagnosticsPage_ = 0;
+
+				LauncherLog::Write(
+					"GAME_RELOAD_FAILED",
+					U"no_valid_games previousCount=" + Format(games_.size())
+				);
+
+				System::MessageBoxOK(
+					U"再読み込みできるゲームがありませんでした。\n"
+					U"現在のゲーム一覧を維持します。\n"
+					U"Ctrl + Shift + F10 で診断結果を確認してください。"
+				);
+				lastActivityAt_ = Scene::Time();
+				return;
+			}
+
+			size_t newSelectedIndex = 0;
+			if (not selectedGameId.isEmpty())
+			{
+				for (size_t i = 0; i < newGames.size(); ++i)
+				{
+					if (newGames[i].gameId == selectedGameId)
+					{
+						newSelectedIndex = i;
+						break;
+					}
+				}
+			}
+
+			const size_t previousCount = games_.size();
+			games_ = std::move(newGames);
+			gameLoadReport_ = std::move(newReport);
+
+			selector_.Select(newSelectedIndex);
+			selector_.CollapseDescription();
+			diagnosticsPage_ = 0;
+			launchGameIndex_ = newSelectedIndex;
+			playedGameIndex_ = newSelectedIndex;
+			surveyGameIndex_ = newSelectedIndex;
+			guideVisitedDevices_ = 0;
+			lastActivityAt_ = Scene::Time();
+
+			LauncherLog::Write(
+				"GAME_RELOAD_COMPLETE",
+				U"previousCount=" + Format(previousCount)
+				+ U" loaded=" + Format(games_.size())
+				+ U" issues=" + Format(gameLoadReport_.issues.size())
+			);
+
+			String message =
+				U"ゲーム一覧を再読み込みしました。\n"
+				U"読み込み成功: " + Format(gameLoadReport_.loaded)
+				+ U" 件";
+
+			if (not gameLoadReport_.issues.isEmpty())
+			{
+				message += U"\nエラー・警告: ";
+				message += Format(gameLoadReport_.issues.size());
+				message += U" 件\nCtrl + Shift + F10 で詳細を確認できます。";
+			}
+
+			System::MessageBoxOK(message);
+		}
+
 		void DrawDiagnostics()
 		{
 			constexpr size_t ItemsPerPage = 7;
@@ -616,7 +729,7 @@ namespace
 				FontAsset(U"Survey.Title");
 
 			font(
-				U"展示は終了しました。"
+				U"展示は終了しました"
 			).drawAt(
 				36,
 				center.movedBy(0, -35),
@@ -855,6 +968,7 @@ namespace
 
 		GameLoadReport gameLoadReport_;
 		bool diagnosticsHotkeyWasDown_ = false;
+		bool reloadHotkeyWasDown_ = false;
 		size_t diagnosticsPage_ = 0;
 
 		AppSettings settings_;
