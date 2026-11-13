@@ -1,5 +1,4 @@
-﻿
-#include "..\include\LauncherApp.hpp"
+﻿#include "..\include\LauncherApp.hpp"
 #include "..\include\LauncherLog.hpp"
 #include "..\include\AppSettings.hpp"
 #include "..\include\Game.hpp"
@@ -229,25 +228,24 @@ namespace
 						continue;
 					}
 
-					if (status == GameRunStatus::LaunchFailed)
+					if (
+						status == GameRunStatus::LaunchFailed
+						|| status == GameRunStatus::Crashed
+						|| status == GameRunStatus::ForceRecovered
+					)
 					{
-						// 起動失敗・管理者による復旧時は
-						// アンケートを表示しない。
+						// 起動失敗・クラッシュ・管理者復旧ではアンケートを出さない。
 						screen_ = Screen::GameSelect;
 						dialog_ = ConfirmDialog::None;
-
+						lastActivityAt_ = Scene::Time();
 						continue;
 					}
 
 					if (status == GameRunStatus::Finished)
 					{
-						// 正常なゲーム終了後は、
-						// アンケートへの回答を案内する。
-						//
-						// 展示終了時刻を過ぎていても、
-						// 回答やスキップの機会を確保する。
+						// 通常終了後はアンケートを案内する。
 						screen_ = Screen::PostGameSurveyPrompt;
-
+						lastActivityAt_ = Scene::Time();
 						continue;
 					}
 				}
