@@ -1,0 +1,25 @@
+
+# ============================================
+# ICTLauncher - Source Code Only
+# ============================================
+
+# デフォルトですべて除外
+/*
+
+# ソースコード
+!/src/
+!/include/
+
+# Visual Studio プロジェクト設定
+!/ICTLauncher.slnx
+!/ICTLauncher.vcxproj
+!/ICTLauncher.vcxproj.filters
+
+# プリコンパイル済みヘッダー関連のソース
+!/stdafx.cpp
+!/stdafx.h
+
+# その他の管理対象
+!/.editorconfig
+!/README.md
+!/.gitignore
